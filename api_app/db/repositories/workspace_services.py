@@ -7,7 +7,7 @@ from models.domain.resource_template import ResourceTemplate
 from models.domain.authentication import User
 from db.repositories.resource_templates import ResourceTemplateRepository
 
-from db.repositories.resources import ResourceRepository, IS_ACTIVE_CLAUSE
+from db.repositories.resources import ResourceRepository, IS_NOT_DELETED_CLAUSE
 from db.repositories.operations import OperationRepository
 from models.domain.workspace_service import WorkspaceService
 from models.schemas.resource import ResourcePatch
@@ -26,7 +26,7 @@ class WorkspaceServiceRepository(ResourceRepository):
 
     @staticmethod
     def active_workspace_services_query(workspace_id: str):
-        return f'SELECT * FROM c WHERE {IS_ACTIVE_CLAUSE} AND c.resourceType = "{ResourceType.WorkspaceService}" AND c.workspaceId = "{workspace_id}"'
+        return f'SELECT * FROM c WHERE {IS_NOT_DELETED_CLAUSE} AND c.resourceType = "{ResourceType.WorkspaceService}" AND c.workspaceId = "{workspace_id}"'
 
     def get_active_workspace_services_for_workspace(self, workspace_id: str) -> List[WorkspaceService]:
         """
@@ -54,10 +54,10 @@ class WorkspaceServiceRepository(ResourceRepository):
     def get_workspace_service_spec_params(self):
         return self.get_resource_base_spec_params()
 
-    def create_workspace_service_item(self, workspace_service_input: WorkspaceServiceInCreate, workspace_id: str) -> Tuple[WorkspaceService, ResourceTemplate]:
+    def create_workspace_service_item(self, workspace_service_input: WorkspaceServiceInCreate, workspace_id: str, user_roles=List[str]) -> Tuple[WorkspaceService, ResourceTemplate]:
         full_workspace_service_id = str(uuid.uuid4())
 
-        template = self.validate_input_against_template(workspace_service_input.templateName, workspace_service_input, ResourceType.WorkspaceService)
+        template = self.validate_input_against_template(workspace_service_input.templateName, workspace_service_input, ResourceType.WorkspaceService, user_roles)
 
         # we don't want something in the input to overwrite the system parameters, so dict.update can't work.
         resource_spec_parameters = {**workspace_service_input.properties, **self.get_workspace_service_spec_params()}

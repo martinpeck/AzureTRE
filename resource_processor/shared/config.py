@@ -1,5 +1,9 @@
 import os
 
+from _version import __version__
+
+VERSION = __version__
+
 
 def get_config(logger_adapter) -> dict:
     config = {}
@@ -37,6 +41,16 @@ def get_config(logger_adapter) -> dict:
         "ARM_CLIENT_SECRET": config["arm_client_secret"],
         "ARM_SUBSCRIPTION_ID": config["arm_subscription_id"],
         "ARM_TENANT_ID": config["arm_tenant_id"]
+    }
+
+    # Load env vars for bundles
+    def envvar_to_key(name: str) -> str:
+        return name[len("RP_BUNDLE_"):].lower()
+
+    config["bundle_params"] = {
+        envvar_to_key(env_var_name): os.getenv(env_var_name)
+        for env_var_name in os.environ
+        if env_var_name.startswith("RP_BUNDLE")
     }
 
     return config

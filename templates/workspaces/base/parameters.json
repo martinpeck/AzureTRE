@@ -59,21 +59,39 @@
       }
     },
     {
-      "name": "keyvault_purge_protection_enabled",
-      "source": {
-        "env": "KEYVAULT_PURGE_PROTECTION_ENABLED"
-      }
-    },
-    {
       "name": "register_aad_application",
       "source": {
         "env": "REGISTER_AAD_APPLICATION"
       }
     },
     {
+      "name": "create_aad_groups",
+      "source": {
+        "env": "CREATE_AAD_GROUPS"
+      }
+    },
+    {
       "name": "client_id",
       "source": {
         "env": "CLIENT_ID"
+      }
+    },
+    {
+      "name": "client_secret",
+      "source": {
+        "env": "CLIENT_SECRET"
+      }
+    },
+    {
+      "name": "scope_id",
+      "source": {
+        "env": "SCOPE_ID"
+      }
+    },
+    {
+      "name": "workspace_owner_object_id",
+      "source": {
+        "env": "WORKSPACE_OWNER_OBJECT_ID"
       }
     },
     {
@@ -92,6 +110,30 @@
       "name": "app_role_id_workspace_researcher",
       "source": {
         "env": "APP_ROLE_ID_WORKSPACE_RESEARCHER"
+      }
+    },
+    {
+      "name": "app_role_id_workspace_airlock_manager",
+      "source": {
+        "env": "APP_ROLE_ID_WORKSPACE_AIRLOCK_MANAGER"
+      }
+    },
+    {
+      "name": "aad_redirect_uris",
+      "source": {
+        "env": "AAD_REDIRECT_URIS"
+      }
+    },
+    {
+      "name": "app_service_plan_sku",
+      "source": {
+        "env": "WORKSPACE_APP_SERVICE_PLAN_SKU"
+      }
+    },
+    {
+      "name": "enable_airlock",
+      "source": {
+        "env": "ENABLE_AIRLOCK"
       }
     }
   ]

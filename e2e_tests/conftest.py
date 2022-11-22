@@ -1,11 +1,16 @@
-from json import JSONDecodeError
 import pytest
-
-from httpx import AsyncClient
-from starlette import status
-
+import asyncio
+from typing import Tuple
 import config
+import logging
 
+from resources.resource import post_resource, disable_and_delete_resource
+from resources.workspace import get_workspace_auth_details
+from resources import strings as resource_strings
+from helpers import get_admin_token
+
+
+LOGGER = logging.getLogger(__name__)
 pytestmark = pytest.mark.asyncio
 
 
@@ -13,7 +18,12 @@ def pytest_addoption(parser):
     parser.addoption("--verify", action="store", default="true")
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
+def event_loop():
+    return asyncio.get_event_loop()
+
+
+@pytest.fixture(scope="session")
 def verify(pytestconfig):
     if pytestconfig.getoption("verify").lower() == "true":
         return True
@@ -21,56 +31,64 @@ def verify(pytestconfig):
         return False
 
 
-@pytest.fixture
-async def admin_token(verify) -> str:
-    async with AsyncClient(verify=verify) as client:
-        responseJson = ""
-        headers = {'Content-Type': "application/x-www-form-urlencoded"}
-        if config.TEST_ACCOUNT_CLIENT_ID != "" and config.TEST_ACCOUNT_CLIENT_SECRET != "":
-            # Use Client Credentials flow
-            payload = f"grant_type=client_credentials&client_id={config.TEST_ACCOUNT_CLIENT_ID}&client_secret={config.TEST_ACCOUNT_CLIENT_SECRET}&scope=api://{config.API_CLIENT_ID}/.default"
-            url = f"https://login.microsoftonline.com/{config.AAD_TENANT_ID}/oauth2/v2.0/token"
+async def create_or_get_test_workspace(auth_type: str, verify: bool, pre_created_workspace_id: str = "", client_id: str = "", client_secret: str = "") -> Tuple[str, str]:
+    if pre_created_workspace_id != "":
+        return f"/workspaces/{pre_created_workspace_id}", pre_created_workspace_id
 
-        else:
-            # Use Resource Owner Password Credentials flow
-            payload = f"grant_type=password&resource={config.API_CLIENT_ID}&username={config.TEST_USER_NAME}&password={config.TEST_USER_PASSWORD}&scope=api://{config.API_CLIENT_ID}/user_impersonation&client_id={config.TEST_APP_ID}"
-            url = f"https://login.microsoftonline.com/{config.AAD_TENANT_ID}/oauth2/token"
+    LOGGER.info("Creating workspace")
+    payload = {
+        "templateName": resource_strings.BASE_WORKSPACE,
+        "properties": {
+            "display_name": "E2E test workspace",
+            "description": "Test workspace for E2E tests",
+            "address_space_size": "small",
+            "auth_type": auth_type
+        }
+    }
+    if auth_type == "Manual":
+        payload["properties"]["client_id"] = client_id
+        payload["properties"]["client_secret"] = client_secret
 
-        response = await client.post(url, headers=headers, content=payload)
-        try:
-            responseJson = response.json()
-        except JSONDecodeError:
-            assert False, "Failed to parse response as JSON: {}".format(response.content)
+    if config.TEST_WORKSPACE_APP_PLAN != "":
+        payload["properties"]["app_service_plan_sku"] = config.TEST_WORKSPACE_APP_PLAN
 
-        assert "access_token" in responseJson, "Failed to get access_token: {}".format(response.content)
-        token = responseJson["access_token"]
-        assert token is not None, "Token not returned"
-        return token if (response.status_code == status.HTTP_200_OK) else None
+    admin_token = await get_admin_token(verify=verify)
+    workspace_path, workspace_id = await post_resource(payload, resource_strings.API_WORKSPACES, access_token=admin_token, verify=verify)
+    return workspace_path, workspace_id
 
 
-@pytest.fixture
-async def workspace_owner_token(verify) -> str:
-    async with AsyncClient(verify=verify) as client:
+async def clean_up_test_workspace(pre_created_workspace_id: str, workspace_path: str, verify: bool):
+    # Only delete the workspace if it wasn't pre-created
+    if pre_created_workspace_id == "":
+        LOGGER.info("Deleting workspace")
+        admin_token = await get_admin_token(verify=verify)
+        await disable_and_delete_resource(f'/api{workspace_path}', admin_token, verify)
 
-        headers = {'Content-Type': "application/x-www-form-urlencoded"}
-        if config.TEST_ACCOUNT_CLIENT_ID != "" and config.TEST_ACCOUNT_CLIENT_SECRET != "":
-            # Use Client Credentials flow
-            payload = f"grant_type=client_credentials&client_id={config.TEST_ACCOUNT_CLIENT_ID}&client_secret={config.TEST_ACCOUNT_CLIENT_SECRET}&scope=api://{config.TEST_WORKSPACE_APP_ID}/.default"
-            url = f"https://login.microsoftonline.com/{config.AAD_TENANT_ID}/oauth2/v2.0/token"
 
-        else:
-            # Use Resource Owner Password Credentials flow
-            payload = f"grant_type=password&resource={config.TEST_WORKSPACE_APP_ID}&username={config.TEST_USER_NAME}&password={config.TEST_USER_PASSWORD}&scope=api://{config.TEST_WORKSPACE_APP_ID}/user_impersonation&client_id={config.TEST_APP_ID}"
-            url = f"https://login.microsoftonline.com/{config.AAD_TENANT_ID}/oauth2/token"
+@pytest.fixture(scope="session")
+async def setup_test_workspace(verify) -> Tuple[str, str, str]:
+    pre_created_workspace_id = config.TEST_WORKSPACE_ID
+    # Set up
+    workspace_path, workspace_id = await create_or_get_test_workspace(
+        auth_type="Manual", verify=verify, pre_created_workspace_id=pre_created_workspace_id, client_id=config.TEST_WORKSPACE_APP_ID, client_secret=config.TEST_WORKSPACE_APP_SECRET)
 
-        response = await client.post(url, headers=headers, content=payload)
-        try:
-            responseJson = response.json()
-        except JSONDecodeError:
-            assert False, "Failed to parse response as JSON: {}".format(response.content)
+    admin_token = await get_admin_token(verify=verify)
+    workspace_owner_token, _ = await get_workspace_auth_details(admin_token=admin_token, workspace_id=workspace_id, verify=verify)
+    yield workspace_path, workspace_id, workspace_owner_token
 
-        assert "access_token" in responseJson, "Failed to get access_token: {}".format(response.content)
-        token = responseJson["access_token"]
-        assert token is not None, "Token not returned"
+    # Tear-down
+    clean_up_test_workspace(pre_created_workspace_id=pre_created_workspace_id, workspace_path=workspace_path, verify=verify)
 
-        return token if (response.status_code == status.HTTP_200_OK) else None
+
+@pytest.fixture(scope="session")
+async def setup_test_aad_workspace(verify) -> Tuple[str, str, str]:
+    pre_created_workspace_id = config.TEST_AAD_WORKSPACE_ID
+    # Set up
+    workspace_path, workspace_id = await create_or_get_test_workspace(auth_type="Automatic", verify=verify, pre_created_workspace_id=pre_created_workspace_id)
+
+    admin_token = await get_admin_token(verify=verify)
+    workspace_owner_token, _ = await get_workspace_auth_details(admin_token=admin_token, workspace_id=workspace_id, verify=verify)
+    yield workspace_path, workspace_id, workspace_owner_token
+
+    # Tear-down
+    clean_up_test_workspace(pre_created_workspace_id=pre_created_workspace_id, workspace_path=workspace_path, verify=verify)

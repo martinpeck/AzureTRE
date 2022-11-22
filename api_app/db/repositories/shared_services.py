@@ -7,7 +7,7 @@ from pydantic import parse_obj_as
 from models.domain.resource_template import ResourceTemplate
 from models.domain.authentication import User
 from db.repositories.resource_templates import ResourceTemplateRepository
-from db.repositories.resources import ResourceRepository, IS_ACTIVE_CLAUSE
+from db.repositories.resources import ResourceRepository, IS_NOT_DELETED_CLAUSE, IS_OPERATING_SHARED_SERVICE
 from db.repositories.operations import OperationRepository
 from db.errors import DuplicateEntity, ResourceIsNotDeployed, EntityDoesNotExist
 from models.domain.shared_service import SharedService
@@ -26,11 +26,11 @@ class SharedServiceRepository(ResourceRepository):
 
     @staticmethod
     def active_shared_services_query():
-        return f'SELECT * FROM c WHERE {IS_ACTIVE_CLAUSE} AND c.resourceType = "{ResourceType.SharedService}"'
+        return f'SELECT * FROM c WHERE {IS_NOT_DELETED_CLAUSE} AND c.resourceType = "{ResourceType.SharedService}"'
 
     @staticmethod
-    def active_shared_service_with_template_name_query(template_name: str):
-        return f'SELECT * FROM c WHERE {IS_ACTIVE_CLAUSE} AND c.resourceType = "{ResourceType.SharedService}" AND c.templateName = "{template_name}"'
+    def operating_shared_service_with_template_name_query(template_name: str):
+        return f'SELECT * FROM c WHERE {IS_OPERATING_SHARED_SERVICE} AND c.resourceType = "{ResourceType.SharedService}" AND c.templateName = "{template_name}"'
 
     def get_shared_service_by_id(self, shared_service_id: str):
         shared_services = self.query(self.shared_service_query(shared_service_id))
@@ -57,17 +57,18 @@ class SharedServiceRepository(ResourceRepository):
     def get_shared_service_spec_params(self):
         return self.get_resource_base_spec_params()
 
-    def create_shared_service_item(self, shared_service_input: SharedServiceTemplateInCreate) -> Tuple[SharedService, ResourceTemplate]:
+    def create_shared_service_item(self, shared_service_input: SharedServiceTemplateInCreate, user_roles: List[str]) -> Tuple[SharedService, ResourceTemplate]:
         shared_service_id = str(uuid.uuid4())
 
-        existing_shared_services = self.query(self.active_shared_service_with_template_name_query(shared_service_input.templateName))
-        # Duplicate is same template (=id), same version and active
+        existing_shared_services = self.query(self.operating_shared_service_with_template_name_query(shared_service_input.templateName))
+
+        # Duplicate is same template (=id), same version and deployed
         if existing_shared_services:
             if len(existing_shared_services) > 1:
                 raise InternalError(f"More than one active shared service exists with the same id {shared_service_id}")
             raise DuplicateEntity
 
-        template = self.validate_input_against_template(shared_service_input.templateName, shared_service_input, ResourceType.SharedService)
+        template = self.validate_input_against_template(shared_service_input.templateName, shared_service_input, ResourceType.SharedService, user_roles)
 
         resource_spec_parameters = {**shared_service_input.properties, **self.get_shared_service_spec_params()}
 

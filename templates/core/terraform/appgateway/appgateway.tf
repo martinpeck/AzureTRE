@@ -5,14 +5,16 @@ resource "azurerm_public_ip" "appgwpip" {
   allocation_method   = "Static" # Static IPs are allocated immediately
   sku                 = "Standard"
   domain_name_label   = var.tre_id
+  tags                = local.tre_core_tags
 
-  lifecycle { ignore_changes = [tags] }
+  lifecycle { ignore_changes = [tags, zones] }
 }
 
 resource "azurerm_user_assigned_identity" "agw_id" {
   resource_group_name = var.resource_group_name
   location            = var.location
   name                = "id-agw-${var.tre_id}"
+  tags                = local.tre_core_tags
 
   lifecycle { ignore_changes = [tags] }
 }
@@ -21,6 +23,7 @@ resource "azurerm_application_gateway" "agw" {
   name                = "agw-${var.tre_id}"
   resource_group_name = var.resource_group_name
   location            = var.location
+  tags                = local.tre_core_tags
 
   sku {
     name     = "Standard_v2"
@@ -105,9 +108,14 @@ resource "azurerm_application_gateway" "agw" {
     pick_host_name_from_backend_http_settings = true
     interval                                  = 15
     protocol                                  = "Https"
-    path                                      = "/api/health"
-    timeout                                   = "30"
-    unhealthy_threshold                       = "3"
+    # Use the /api/ping endpoint to verify that we can connect to the API
+    # This still allows the richer information from /api/health to be queried
+    # in the event of a component being unavailable
+    # It also avoids incurring the Azure Management API calls to resource processor
+    # when not needed (which can cause throttling)
+    path                = "/api/ping"
+    timeout             = "30"
+    unhealthy_threshold = "3"
   }
 
   # Public HTTPS listener
@@ -132,6 +140,7 @@ resource "azurerm_application_gateway" "agw" {
     rule_type          = "PathBasedRouting"
     http_listener_name = local.secure_listener_name
     url_path_map_name  = local.app_path_map_name
+    priority           = 100
   }
 
   # Routing rule to redirect non-secure traffic to HTTPS
@@ -140,6 +149,7 @@ resource "azurerm_application_gateway" "agw" {
     rule_type          = "PathBasedRouting"
     http_listener_name = local.insecure_listener_name
     url_path_map_name  = local.redirect_path_map_name
+    priority           = 10
   }
 
   # Default traffic is routed to the static website. Exception is API.
@@ -180,18 +190,8 @@ resource "azurerm_application_gateway" "agw" {
   }
 
   # We don't want Terraform to revert certificate cycle changes. We assume the certificate will be renewed in keyvault.
-  lifecycle {
-    ignore_changes = [
-      ssl_certificate,
-      tags
-    ]
-  }
+  lifecycle { ignore_changes = [ssl_certificate, tags] }
 
-}
-
-data "azurerm_log_analytics_workspace" "tre" {
-  name                = "log-${var.tre_id}"
-  resource_group_name = var.resource_group_name
 }
 
 resource "azurerm_monitor_diagnostic_setting" "agw" {

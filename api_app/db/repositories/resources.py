@@ -1,22 +1,24 @@
-from typing import Tuple
-from azure.cosmos import CosmosClient
-from datetime import datetime
-from jsonschema import validate
-from pydantic import UUID4, parse_obj_as
 import copy
-from models.domain.authentication import User
+from datetime import datetime
+from typing import Tuple, List
 
+from azure.cosmos import CosmosClient
+from azure.cosmos.exceptions import CosmosResourceNotFoundError
 from core import config
-from db.errors import EntityDoesNotExist
+from db.errors import EntityDoesNotExist, UserNotAuthorizedToUseTemplate
 from db.repositories.base import BaseRepository
 from db.repositories.resource_templates import ResourceTemplateRepository
+from jsonschema import validate
+from models.domain.authentication import User
 from models.domain.resource import Resource, ResourceHistoryItem, ResourceType
 from models.domain.resource_template import ResourceTemplate
-from models.schemas.resource import ResourcePatch
 from models.domain.shared_service import SharedService
+from models.domain.operation import Status
+from models.domain.user_resource import UserResource
 from models.domain.workspace import Workspace
 from models.domain.workspace_service import WorkspaceService
-from models.domain.user_resource import UserResource
+from models.schemas.resource import ResourcePatch
+from pydantic import UUID4, parse_obj_as
 
 
 class ResourceRepository(BaseRepository):
@@ -26,7 +28,7 @@ class ResourceRepository(BaseRepository):
     @staticmethod
     def _active_resources_query():
         # get active docs (not deleted)
-        return f'SELECT * FROM c WHERE {IS_ACTIVE_CLAUSE}'
+        return f'SELECT * FROM c WHERE {IS_NOT_DELETED_CLAUSE}'
 
     def _active_resources_by_type_query(self, resource_type: ResourceType):
         return self._active_resources_query() + f' AND c.resourceType = "{resource_type}"'
@@ -48,19 +50,15 @@ class ResourceRepository(BaseRepository):
         return {"tre_id": config.TRE_ID}
 
     def get_resource_dict_by_id(self, resource_id: UUID4) -> dict:
-        query = self._active_resources_by_id_query(str(resource_id))
-        resources = self.query(query=query)
-        if not resources:
+        try:
+            resource = self.read_item_by_id(str(resource_id))
+        except CosmosResourceNotFoundError:
             raise EntityDoesNotExist
-        return resources[0]
+        return resource
 
     def get_resource_by_id(self, resource_id: UUID4) -> Resource:
-        query = self._active_resources_by_id_query(str(resource_id))
-        resources = self.query(query=query)
-        if not resources:
-            raise EntityDoesNotExist
+        resource = self.get_resource_dict_by_id(resource_id)
 
-        resource = resources[0]
         if resource["resourceType"] == ResourceType.SharedService:
             return parse_obj_as(SharedService, resource)
         if resource["resourceType"] == ResourceType.Workspace:
@@ -79,7 +77,7 @@ class ResourceRepository(BaseRepository):
             raise EntityDoesNotExist
         return parse_obj_as(Resource, resources[0])
 
-    def validate_input_against_template(self, template_name: str, resource_input, resource_type: ResourceType, parent_template_name: str = "") -> ResourceTemplate:
+    def validate_input_against_template(self, template_name: str, resource_input, resource_type: ResourceType, user_roles: List[str] = None, parent_template_name: str = "") -> ResourceTemplate:
         try:
             template = self._get_enriched_template(template_name, resource_type, parent_template_name)
         except EntityDoesNotExist:
@@ -87,6 +85,12 @@ class ResourceRepository(BaseRepository):
                 raise ValueError(f'The template "{template_name}" does not exist or is not valid for the workspace service type "{parent_template_name}"')
             else:
                 raise ValueError(f'The template "{template_name}" does not exist')
+
+        # If authorizedRoles is empty, template is available to all users
+        if "authorizedRoles" in template and template["authorizedRoles"]:
+            # If authorizedRoles is not empty, the user is required to have at least one of authorizedRoles
+            if len(set(template["authorizedRoles"]).intersection(set(user_roles))) == 0:
+                raise UserNotAuthorizedToUseTemplate(f"User not authorized to use template {template_name}")
 
         self._validate_resource_parameters(resource_input.dict(), template)
 
@@ -130,7 +134,7 @@ class ResourceRepository(BaseRepository):
         update_template["required"] = []
         update_template["properties"] = {}
         for prop_name, prop in enriched_template["properties"].items():
-            if("updateable" in prop.keys() and prop["updateable"] is True):
+            if ("updateable" in prop.keys() and prop["updateable"] is True):
                 update_template["properties"][prop_name] = prop
 
         self._validate_resource_parameters(resource_patch.dict(), update_template)
@@ -140,4 +144,5 @@ class ResourceRepository(BaseRepository):
 
 
 # Cosmos query consts
-IS_ACTIVE_CLAUSE = 'c.isActive != false'
+IS_NOT_DELETED_CLAUSE = f'c.deploymentStatus != "{Status.Deleted}"'
+IS_OPERATING_SHARED_SERVICE = f'c.deploymentStatus != "{Status.Deleted}" and c.deploymentStatus != "{Status.DeploymentFailed}"'

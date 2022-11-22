@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
         with:
           # Full git history is needed to get a proper list of
           # changed files within `super-linter`
@@ -31,6 +31,12 @@ jobs:
             terraform:
               # our Terraform uses more than just *.tf files, so need to check changes in the folder
               - '**/terraform/**/*'
+            core:
+              - 'templates/core/**/*'
+            core_version:
+              - 'templates/core/version.txt'
+            docs:
+              - 'docs/**/*'
 
       - name: Terraform format check
         if: ${{ steps.filter.outputs.terraform == 'true' }}
@@ -45,10 +51,16 @@ jobs:
           | xargs -0 -I{} sh -c 'echo "***** Validating: {} *****"; \
           terraform -chdir={} init -backend=false; terraform -chdir={} validate'
 
+      - name: "Stale version: core"
+        if: ${{ steps.filter.outputs.core == 'true' &&
+          steps.filter.outputs.core_version == 'false' }}
+        run: echo "::error::Code update without version change" && exit 1
+
       - name: Lint code base
         # the slim image is 2GB smaller and we don't use the extra stuff
-        # Moved this after the Terraform checks above due something similar to this issue: https://github.com/github/super-linter/issues/2433
-        uses: github/super-linter/slim@v4
+        # Moved this after the Terraform checks above due something similar to this issue:
+        # https://github.com/github/super-linter/issues/2433
+        uses: github/super-linter/slim@v4.9.7
         env:
           VALIDATE_ALL_CODEBASE: false
           DEFAULT_BRANCH: main
@@ -61,6 +73,13 @@ jobs:
           JAVA_FILE_NAME: checkstyle.xml
           VALIDATE_BASH: true
           VALIDATE_BASH_EXEC: true
-          # https://github.com/microsoft/AzureTRE/issues/1723 tracks re-instating VALIDATE_GITHUB_ACTIONS
-          # Note: in the meantime, the `.github/scripts/run-test.sh` script includes the `actionlint` checks)
-          # VALIDATE_GITHUB_ACTIONS: true
+          VALIDATE_GITHUB_ACTIONS: true
+          VALIDATE_DOCKERFILE_HADOLINT: true
+          VALIDATE_TSX: true
+          VALIDATE_TYPESCRIPT_ES: true
+
+      - name: Docs validation
+        if: ${{ steps.filter.outputs.docs == 'true' }}
+        run: |
+          pip install -r docs/requirements.txt
+          mkdocs build --strict

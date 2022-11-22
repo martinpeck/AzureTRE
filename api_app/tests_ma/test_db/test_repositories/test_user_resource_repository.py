@@ -2,6 +2,7 @@ from mock import patch
 import pytest
 
 from db.errors import EntityDoesNotExist
+from db.repositories.resources import IS_NOT_DELETED_CLAUSE
 from db.repositories.user_resources import UserResourceRepository
 from models.domain.resource import ResourceType
 from models.domain.user_resource import UserResource
@@ -44,7 +45,7 @@ def test_create_user_resource_item_creates_a_user_resource_with_the_right_values
     user_resource_to_create = basic_user_resource_request
     validate_input_mock.return_value = basic_user_resource_template
 
-    user_resource, _ = user_resource_repo.create_user_resource_item(user_resource_to_create, WORKSPACE_ID, SERVICE_ID, "parent-service-type", USER_ID)
+    user_resource, _ = user_resource_repo.create_user_resource_item(user_resource_to_create, WORKSPACE_ID, SERVICE_ID, "parent-service-type", USER_ID, [])
 
     assert user_resource.templateName == basic_user_resource_request.templateName
     assert user_resource.resourceType == ResourceType.UserResource
@@ -59,12 +60,12 @@ def test_create_user_resource_item_creates_a_user_resource_with_the_right_values
 @patch('db.repositories.user_resources.UserResourceRepository.validate_input_against_template', side_effect=ValueError)
 def test_create_user_resource_item_raises_value_error_if_template_is_invalid(_, user_resource_repo, basic_user_resource_request):
     with pytest.raises(ValueError):
-        user_resource_repo.create_user_resource_item(basic_user_resource_request, WORKSPACE_ID, SERVICE_ID, "parent-service-type", USER_ID)
+        user_resource_repo.create_user_resource_item(basic_user_resource_request, WORKSPACE_ID, SERVICE_ID, "parent-service-type", USER_ID, [])
 
 
 @patch('db.repositories.user_resources.UserResourceRepository.query', return_value=[])
 def test_get_user_resources_for_workspace_queries_db(query_mock, user_resource_repo):
-    expected_query = f'SELECT * FROM c WHERE c.isActive != false AND c.resourceType = "user-resource" AND c.parentWorkspaceServiceId = "{SERVICE_ID}" AND c.workspaceId = "{WORKSPACE_ID}"'
+    expected_query = f'SELECT * FROM c WHERE {IS_NOT_DELETED_CLAUSE} AND c.resourceType = "user-resource" AND c.parentWorkspaceServiceId = "{SERVICE_ID}" AND c.workspaceId = "{WORKSPACE_ID}"'
 
     user_resource_repo.get_user_resources_for_workspace_service(WORKSPACE_ID, SERVICE_ID)
 

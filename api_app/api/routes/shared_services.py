@@ -4,17 +4,17 @@ from fastapi import APIRouter, Depends, HTTPException, Header, status, Response
 from jsonschema.exceptions import ValidationError
 
 from db.repositories.operations import OperationRepository
-from db.errors import DuplicateEntity
+from db.errors import DuplicateEntity, UserNotAuthorizedToUseTemplate
 from api.dependencies.database import get_repository
 from api.dependencies.shared_services import get_shared_service_by_id_from_path, get_operation_by_id_from_path
 from db.repositories.resource_templates import ResourceTemplateRepository
 from db.repositories.shared_services import SharedServiceRepository
 from models.domain.resource import ResourceType
 from models.schemas.operation import OperationInList, OperationInResponse
-from models.schemas.shared_service import SharedServiceInCreate, SharedServicesInList, SharedServiceInResponse
+from models.schemas.shared_service import RestrictedSharedServiceInResponse, SharedServiceInCreate, SharedServicesInList, SharedServiceInResponse
 from models.schemas.resource import ResourcePatch
 from resources import strings
-from .workspaces import save_and_deploy_resource, check_for_etag, construct_location_header
+from .workspaces import save_and_deploy_resource, construct_location_header
 from azure.cosmos.exceptions import CosmosAccessConditionFailedError
 from .resource_helpers import send_custom_action_message, send_uninstall_message, send_resource_request_message
 from services.authentication import get_current_admin_user, get_current_tre_user_or_tre_admin
@@ -24,27 +24,39 @@ from models.domain.request_action import RequestAction
 shared_services_router = APIRouter(dependencies=[Depends(get_current_tre_user_or_tre_admin)])
 
 
+def user_is_tre_admin(user):
+    if "TREAdmin" in user.roles:
+        return True
+    return False
+
+
 @shared_services_router.get("/shared-services", response_model=SharedServicesInList, name=strings.API_GET_ALL_SHARED_SERVICES, dependencies=[Depends(get_current_tre_user_or_tre_admin)])
 async def retrieve_shared_services(shared_services_repo=Depends(get_repository(SharedServiceRepository))) -> SharedServicesInList:
     shared_services = shared_services_repo.get_active_shared_services()
     return SharedServicesInList(sharedServices=shared_services)
 
 
-@shared_services_router.get("/shared-services/{shared_service_id}", response_model=SharedServiceInResponse, name=strings.API_GET_SHARED_SERVICE_BY_ID, dependencies=[Depends(get_current_admin_user), Depends(get_shared_service_by_id_from_path)])
-async def retrieve_shared_service_by_id(shared_service=Depends(get_shared_service_by_id_from_path)) -> SharedServiceInResponse:
-    return SharedServiceInResponse(sharedService=shared_service)
+@shared_services_router.get("/shared-services/{shared_service_id}", response_model=SharedServiceInResponse, name=strings.API_GET_SHARED_SERVICE_BY_ID, dependencies=[Depends(get_current_tre_user_or_tre_admin), Depends(get_shared_service_by_id_from_path)])
+async def retrieve_shared_service_by_id(shared_service=Depends(get_shared_service_by_id_from_path), user=Depends(get_current_tre_user_or_tre_admin)):
+    if user_is_tre_admin(user):
+        return SharedServiceInResponse(sharedService=shared_service)
+    else:
+        return RestrictedSharedServiceInResponse(sharedService=shared_service)
 
 
 @shared_services_router.post("/shared-services", status_code=status.HTTP_202_ACCEPTED, response_model=OperationInResponse, name=strings.API_CREATE_SHARED_SERVICE, dependencies=[Depends(get_current_admin_user)])
 async def create_shared_service(response: Response, shared_service_input: SharedServiceInCreate, user=Depends(get_current_admin_user), shared_services_repo=Depends(get_repository(SharedServiceRepository)), resource_template_repo=Depends(get_repository(ResourceTemplateRepository)), operations_repo=Depends(get_repository(OperationRepository))) -> OperationInResponse:
     try:
-        shared_service, resource_template = shared_services_repo.create_shared_service_item(shared_service_input)
+        shared_service, resource_template = shared_services_repo.create_shared_service_item(shared_service_input, user.roles)
     except (ValidationError, ValueError) as e:
         logging.error(f"Failed create shared service model instance: {e}")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except DuplicateEntity as e:
         logging.error(f"Shared service already exists: {e}")
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    except UserNotAuthorizedToUseTemplate as e:
+        logging.error(f"User not authorized to use template: {e}")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
 
     operation = await save_and_deploy_resource(
         resource=shared_service,
@@ -63,8 +75,7 @@ async def create_shared_service(response: Response, shared_service_input: Shared
                               response_model=OperationInResponse,
                               name=strings.API_UPDATE_SHARED_SERVICE,
                               dependencies=[Depends(get_current_admin_user), Depends(get_shared_service_by_id_from_path)])
-async def patch_shared_service(shared_service_patch: ResourcePatch, response: Response, user=Depends(get_current_admin_user), shared_service_repo=Depends(get_repository(SharedServiceRepository)), shared_service=Depends(get_shared_service_by_id_from_path), resource_template_repo=Depends(get_repository(ResourceTemplateRepository)), operations_repo=Depends(get_repository(OperationRepository)), etag: str = Header(None)) -> SharedServiceInResponse:
-    check_for_etag(etag)
+async def patch_shared_service(shared_service_patch: ResourcePatch, response: Response, user=Depends(get_current_admin_user), shared_service_repo=Depends(get_repository(SharedServiceRepository)), shared_service=Depends(get_shared_service_by_id_from_path), resource_template_repo=Depends(get_repository(ResourceTemplateRepository)), operations_repo=Depends(get_repository(OperationRepository)), etag: str = Header(...)) -> SharedServiceInResponse:
     try:
         patched_shared_service, resource_template = shared_service_repo.patch_shared_service(shared_service, shared_service_patch, etag, resource_template_repo, user)
         operation = await send_resource_request_message(

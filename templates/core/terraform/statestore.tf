@@ -1,4 +1,4 @@
-resource "azurerm_cosmosdb_account" "tre-db-account" {
+resource "azurerm_cosmosdb_account" "tre_db_account" {
   name                      = "cosmos-${var.tre_id}"
   location                  = azurerm_resource_group.core.location
   resource_group_name       = azurerm_resource_group.core.name
@@ -6,6 +6,7 @@ resource "azurerm_cosmosdb_account" "tre-db-account" {
   kind                      = "GlobalDocumentDB"
   enable_automatic_failover = false
   ip_range_filter           = var.enable_local_debugging ? local.myip : null
+  tags                      = local.tre_core_tags
 
   consistency_policy {
     consistency_level       = "BoundedStaleness"
@@ -21,25 +22,40 @@ resource "azurerm_cosmosdb_account" "tre-db-account" {
   lifecycle { ignore_changes = [tags] }
 }
 
-resource "azurerm_cosmosdb_sql_database" "tre-db" {
+moved {
+  from = azurerm_cosmosdb_account.tre-db-account
+  to   = azurerm_cosmosdb_account.tre_db_account
+}
+
+resource "azurerm_cosmosdb_sql_database" "tre_db" {
   name                = "AzureTRE"
   resource_group_name = azurerm_resource_group.core.name
-  account_name        = azurerm_cosmosdb_account.tre-db-account.name
+  account_name        = azurerm_cosmosdb_account.tre_db_account.name
   throughput          = 400
 }
 
-resource "azurerm_management_lock" "tre-db" {
+moved {
+  from = azurerm_cosmosdb_sql_database.tre-db
+  to   = azurerm_cosmosdb_sql_database.tre_db
+}
+
+resource "azurerm_management_lock" "tre_db" {
   count      = var.stateful_resources_locked ? 1 : 0
   name       = "tre-db-lock"
-  scope      = azurerm_cosmosdb_sql_database.tre-db.id
+  scope      = azurerm_cosmosdb_sql_database.tre_db.id
   lock_level = "CanNotDelete"
   notes      = "Locked to prevent accidental deletion"
+}
+
+moved {
+  from = azurerm_management_lock.tre-db
+  to   = azurerm_management_lock.tre_db
 }
 
 resource "azurerm_private_dns_zone" "cosmos" {
   name                = "privatelink.documents.azure.com"
   resource_group_name = azurerm_resource_group.core.name
-
+  tags                = local.tre_core_tags
   lifecycle { ignore_changes = [tags] }
 }
 
@@ -48,7 +64,7 @@ resource "azurerm_private_dns_zone_virtual_network_link" "cosmos_documents_dns_l
   resource_group_name   = azurerm_resource_group.core.name
   private_dns_zone_name = azurerm_private_dns_zone.cosmos.name
   virtual_network_id    = module.network.core_vnet_id
-
+  tags                  = local.tre_core_tags
   lifecycle { ignore_changes = [tags] }
 }
 
@@ -57,7 +73,7 @@ resource "azurerm_private_endpoint" "sspe" {
   location            = azurerm_resource_group.core.location
   resource_group_name = azurerm_resource_group.core.name
   subnet_id           = module.network.shared_subnet_id
-
+  tags                = local.tre_core_tags
   lifecycle { ignore_changes = [tags] }
 
   private_dns_zone_group {
@@ -67,7 +83,7 @@ resource "azurerm_private_endpoint" "sspe" {
 
   private_service_connection {
     name                           = "psc-ss-${var.tre_id}"
-    private_connection_resource_id = azurerm_cosmosdb_account.tre-db-account.id
+    private_connection_resource_id = azurerm_cosmosdb_account.tre_db_account.id
     is_manual_connection           = false
     subresource_names              = ["Sql"]
   }

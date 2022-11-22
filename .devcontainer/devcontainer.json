@@ -25,11 +25,11 @@
   ],
   "remoteUser": "vscode",
   "containerEnv": {
-    "DOCKER_BUILDKIT": "1",
+    "DOCKER_BUILDKIT": "1"
   },
   "remoteEnv": {
     // this is used for SuperLinter
-    "LOCAL_WORKSPACE_FOLDER": "${localWorkspaceFolder}",
+    "LOCAL_WORKSPACE_FOLDER": "${localWorkspaceFolder}"
   },
   // Set *default* container specific settings.json values on container create.
   "settings": {
@@ -71,7 +71,6 @@
           "jinja": true,
           "justMyCode": false,
           "console": "integratedTerminal",
-          "envFile": "${workspaceFolder}/templates/core/private.env",
           "preLaunchTask": "Copy_env_file_for_api_debug",
           "cwd": "${workspaceFolder}/api_app"
         },
@@ -83,10 +82,39 @@
           "justMyCode": true,
           "cwd": "${workspaceFolder}/e2e_tests/",
           "preLaunchTask": "Copy_env_file_for_e2e_debug",
-          "envFile": "${workspaceFolder}/templates/core/private.env",
           "args": [
             "-m",
             "extended",
+            "--verify",
+            "false"
+          ]
+        },
+        {
+          "name": "E2E Extended AAD",
+          "type": "python",
+          "request": "launch",
+          "module": "pytest",
+          "justMyCode": true,
+          "cwd": "${workspaceFolder}/e2e_tests/",
+          "preLaunchTask": "Copy_env_file_for_e2e_debug",
+          "args": [
+            "-m",
+            "extended_aad",
+            "--verify",
+            "false"
+          ]
+        },
+        {
+          "name": "E2E Shared Services",
+          "type": "python",
+          "request": "launch",
+          "module": "pytest",
+          "justMyCode": true,
+          "cwd": "${workspaceFolder}/e2e_tests/",
+          "preLaunchTask": "Copy_env_file_for_e2e_debug",
+          "args": [
+            "-m",
+            "shared_services",
             "--verify",
             "false"
           ]
@@ -99,7 +127,6 @@
           "justMyCode": true,
           "cwd": "${workspaceFolder}/e2e_tests/",
           "preLaunchTask": "Copy_env_file_for_e2e_debug",
-          "envFile": "${workspaceFolder}/templates/core/private.env",
           "args": [
             "-m",
             "performance",
@@ -115,10 +142,24 @@
           "justMyCode": true,
           "cwd": "${workspaceFolder}/e2e_tests/",
           "preLaunchTask": "Copy_env_file_for_e2e_debug",
-          "envFile": "${workspaceFolder}/templates/core/private.env",
           "args": [
             "-m",
             "smoke",
+            "--verify",
+            "false"
+          ]
+        },
+        {
+          "name": "E2E Airlock",
+          "type": "python",
+          "request": "launch",
+          "module": "pytest",
+          "justMyCode": true,
+          "cwd": "${workspaceFolder}/e2e_tests/",
+          "preLaunchTask": "Copy_env_file_for_e2e_debug",
+          "args": [
+            "-m",
+            "airlock",
             "--verify",
             "false"
           ]
@@ -145,6 +186,20 @@
           "purpose": [
             "debug-test"
           ]
+        },
+        {
+          "name": "Launch Edge (localhost)",
+          "type": "pwa-msedge",
+          "request": "launch",
+          "url": "http://localhost:3000",
+          "webRoot": "${workspaceFolder}/ui/app"
+        },
+        {
+          "name": "Launch Chrome (localhost)",
+          "type": "pwa-chrome",
+          "request": "launch",
+          "url": "http://localhost:3000",
+          "webRoot": "${workspaceFolder}/ui/app"
         }
       ],
       "compounds": []
@@ -154,12 +209,12 @@
       "tasks": [
         {
           "label": "Copy_env_file_for_api_debug",
-          "command": "cp --force ${workspaceFolder}/templates/core/.env ${workspaceFolder}/api_app/.env",
+          "command": "cat ${workspaceFolder}/templates/core/.env ${workspaceFolder}/devops/auth.env ${workspaceFolder}/templates/core/private.env > ${workspaceFolder}/api_app/.env",
           "type": "shell"
         },
         {
           "label": "Copy_env_file_for_e2e_debug",
-          "command": "cp --force ${workspaceFolder}/templates/core/.env ${workspaceFolder}/e2e_tests/.env",
+          "command": "cat ${workspaceFolder}/templates/core/.env ${workspaceFolder}/devops/auth.env ${workspaceFolder}/templates/core/private.env > ${workspaceFolder}/e2e_tests/.env",
           "type": "shell"
         },
         {
@@ -175,7 +230,7 @@
           },
           "command": "pytest",
           "args": [
-            "--ignore=e2e_tests",
+            "--ignore=e2e_tests"
           ]
         },
         {
@@ -189,7 +244,7 @@
             "-m",
             "pytest",
             "-m",
-            "smoke",
+            "smoke"
           ]
         }
       ]
@@ -200,17 +255,17 @@
     "ms-python.python",
     "hashicorp.terraform",
     "github.vscode-pull-request-github",
-    "ms-kubernetes-tools.porter-vscode",
+    "getporter.porter-vscode",
     "davidanson.vscode-markdownlint",
     "editorconfig.editorconfig",
-    "github.vscode-pull-request-github",
     "mikestead.dotenv",
     "humao.rest-client",
     "timonwong.shellcheck",
+    "ms-azuretools.vscode-azurefunctions"
   ],
   "forwardPorts": [
     8000
   ],
-  // Give permission to access docker socket
-  "postCreateCommand": "sudo bash ./devops/scripts/set_docker_sock_permission.sh"
+  // Run commands after the container is created.
+  "postCreateCommand": "./.devcontainer/scripts/post-create.sh"
 }

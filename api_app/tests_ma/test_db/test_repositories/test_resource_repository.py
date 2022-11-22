@@ -7,8 +7,9 @@ from jsonschema.exceptions import ValidationError
 from tests_ma.test_api.test_routes.test_resource_helpers import FAKE_CREATE_TIMESTAMP, FAKE_UPDATE_TIMESTAMP
 from tests_ma.test_api.conftest import create_test_user
 
-from db.errors import EntityDoesNotExist
+from db.errors import EntityDoesNotExist, UserNotAuthorizedToUseTemplate
 from db.repositories.resources import ResourceRepository
+from azure.cosmos.exceptions import CosmosResourceNotFoundError
 from models.domain.resource import Resource, ResourceHistoryItem
 from models.domain.resource_template import ResourceTemplate
 from models.domain.user_resource_template import UserResourceTemplate
@@ -34,7 +35,6 @@ def workspace_input():
 def sample_resource() -> Resource:
     return Resource(
         id=RESOURCE_ID,
-        isActive=True,
         isEnabled=True,
         resourcePath="/resource/path",
         templateName="template_name",
@@ -141,7 +141,7 @@ def test_validate_input_against_template_returns_template_version_if_template_is
                                                            properties={},
                                                            customActions=[]).dict()
 
-    template = resource_repo.validate_input_against_template("template1", workspace_input, ResourceType.Workspace)
+    template = resource_repo.validate_input_against_template("template1", workspace_input, ResourceType.Workspace, [])
 
     assert template.version == "0.1.0"
 
@@ -151,7 +151,7 @@ def test_validate_input_against_template_raises_value_error_if_template_does_not
     enriched_template_mock.side_effect = EntityDoesNotExist
 
     with pytest.raises(ValueError):
-        resource_repo.validate_input_against_template("template_name", workspace_input, ResourceType.Workspace)
+        resource_repo.validate_input_against_template("template_name", workspace_input, ResourceType.Workspace, [])
 
 
 @patch("db.repositories.resources.ResourceRepository._get_enriched_template")
@@ -159,25 +159,88 @@ def test_validate_input_against_template_raises_value_error_if_the_user_resource
     enriched_template_mock.side_effect = EntityDoesNotExist
 
     with pytest.raises(ValueError):
-        resource_repo.validate_input_against_template("template_name", workspace_input, ResourceType.UserResource, "parent_template_name")
+        resource_repo.validate_input_against_template("template_name", workspace_input, ResourceType.UserResource, [], "parent_template_name")
 
 
 @patch("db.repositories.resources.ResourceRepository._get_enriched_template")
-def test_validate_input_against_template_raises_value_error_if_payload_is_invalid(enriched_template_mock, resource_repo):
+def test_validate_input_against_template_raises_value_error_if_payload_is_invalid(enriched_template_mock, resource_repo, workspace_input):
+    template_dict = ResourceTemplate(
+        id="123",
+        name="template1",
+        description="description",
+        version="0.1.0",
+        resourceType=ResourceType.Workspace,
+        current=True,
+        required=["display_name"],
+        properties={},
+        customActions=[]).dict()
+
+    # the enrich template method does this
+    template_dict.pop("allOf")
+
+    enriched_template_mock.return_value = template_dict
+
+    # missing display name
+    workspace_input = WorkspaceInCreate(templateName="template1")
+
+    with pytest.raises(ValidationError):
+        resource_repo.validate_input_against_template("template1", workspace_input, ResourceType.Workspace, [])
+
+
+@patch("db.repositories.resources.ResourceRepository._get_enriched_template")
+def test_validate_input_against_template_raises_if_user_does_not_have_required_role(enriched_template_mock, resource_repo, workspace_input):
     enriched_template_mock.return_value = ResourceTemplate(id="123",
                                                            name="template1",
                                                            description="description",
                                                            version="0.1.0",
                                                            resourceType=ResourceType.Workspace,
                                                            current=True,
-                                                           required=["display_name"],
+                                                           required=[],
+                                                           authorizedRoles=["missing_role"],
                                                            properties={},
                                                            customActions=[]).dict()
-    # missing display name
-    workspace_input = WorkspaceInCreate(templateName="template1")
 
-    with pytest.raises(ValidationError):
-        resource_repo.validate_input_against_template("template1", workspace_input, ResourceType.Workspace)
+    with pytest.raises(UserNotAuthorizedToUseTemplate):
+        _ = resource_repo.validate_input_against_template("template1", workspace_input, ResourceType.Workspace, ["test_role", "another_role"])
+
+
+@patch("db.repositories.resources.ResourceRepository._get_enriched_template")
+@patch("db.repositories.resources.ResourceRepository._validate_resource_parameters", return_value=None)
+def test_validate_input_against_template_valid_if_user_has_only_one_role(_, enriched_template_mock, resource_repo, workspace_input):
+    enriched_template_mock.return_value = ResourceTemplate(id="123",
+                                                           name="template1",
+                                                           description="description",
+                                                           version="0.1.0",
+                                                           resourceType=ResourceType.Workspace,
+                                                           current=True,
+                                                           required=[],
+                                                           authorizedRoles=["test_role", "missing_role"],
+                                                           properties={},
+                                                           customActions=[]).dict()
+
+    template = resource_repo.validate_input_against_template("template1", workspace_input, ResourceType.Workspace, ["test_role", "another_role"])
+
+    # does not throw
+    assert template.version == "0.1.0"
+
+
+@patch("db.repositories.resources.ResourceRepository._get_enriched_template")
+@patch("db.repositories.resources.ResourceRepository._validate_resource_parameters", return_value=None)
+def test_validate_input_against_template_valid_if_required_roles_set_is_empty(_, enriched_template_mock, resource_repo, workspace_input):
+    enriched_template_mock.return_value = ResourceTemplate(id="123",
+                                                           name="template1",
+                                                           description="description",
+                                                           version="0.1.0",
+                                                           resourceType=ResourceType.Workspace,
+                                                           current=True,
+                                                           required=[],
+                                                           properties={},
+                                                           customActions=[]).dict()
+
+    template = resource_repo.validate_input_against_template("template1", workspace_input, ResourceType.Workspace, ["test_user_role"])
+
+    # does not throw
+    assert template.version == "0.1.0"
 
 
 @patch("db.repositories.resources.ResourceRepository._get_enriched_template")
@@ -238,18 +301,9 @@ def test_get_enriched_template_returns_the_enriched_template_for_user_resources(
     assert "display_name" in template["properties"]
 
 
-def test_get_resource_dict_by_id_queries_db(resource_repo):
-    item_id = "123"
-    resource_repo.query = MagicMock(return_value=[{"id": item_id}])
-
-    resource_repo.get_resource_dict_by_id(item_id)
-
-    resource_repo.query.assert_called_once_with(query='SELECT * FROM c WHERE c.isActive != false AND c.id = "123"')
-
-
 def test_get_resource_dict_by_id_raises_entity_does_not_exist_if_no_resources_come_back(resource_repo):
     item_id = "123"
-    resource_repo.query = MagicMock(return_value=[])
+    resource_repo.read_item_by_id = MagicMock(side_effect=CosmosResourceNotFoundError)
 
     with pytest.raises(EntityDoesNotExist):
         resource_repo.get_resource_dict_by_id(item_id)

@@ -4,15 +4,19 @@ resource "azurerm_public_ip" "fwpip" {
   location            = data.azurerm_resource_group.rg.location
   allocation_method   = "Static"
   sku                 = "Standard"
+  tags                = local.tre_shared_service_tags
 
-  lifecycle { ignore_changes = [tags] }
+  lifecycle { ignore_changes = [tags, zones] }
 }
 
 resource "azurerm_firewall" "fw" {
   depends_on          = [azurerm_public_ip.fwpip]
-  name                = "fw-${var.tre_id}"
+  name                = local.firewall_name
   resource_group_name = local.core_resource_group_name
   location            = data.azurerm_resource_group.rg.location
+  sku_tier            = "Standard"
+  sku_name            = "AZFW_VNet"
+  tags                = local.tre_shared_service_tags
   ip_configuration {
     name                 = "fw-ip-configuration"
     subnet_id            = data.azurerm_subnet.firewall.id
@@ -30,51 +34,26 @@ resource "azurerm_management_lock" "fw" {
   notes      = "Locked to prevent accidental deletion"
 }
 
+data "azurerm_monitor_diagnostic_categories" "firewall" {
+  resource_id = azurerm_firewall.fw.id
+}
+
 resource "azurerm_monitor_diagnostic_setting" "firewall" {
-  name                           = "diagnostics-firewall-${var.tre_id}"
+  name                           = "diagnostics-fw-${var.tre_id}"
   target_resource_id             = azurerm_firewall.fw.id
   log_analytics_workspace_id     = data.azurerm_log_analytics_workspace.tre.id
-  log_analytics_destination_type = "Dedicated"
+  log_analytics_destination_type = "AzureDiagnostics"
 
-  log {
-    category = "AzureFirewallApplicationRule"
-    enabled  = true
+  dynamic "log" {
+    for_each = data.azurerm_monitor_diagnostic_categories.firewall.logs
+    content {
+      category = log.value
+      enabled  = contains(local.firewall_diagnostic_categories_enabled, log.value) ? true : false
 
-
-    retention_policy {
-      enabled = false
-      days    = 0
-    }
-  }
-
-  log {
-
-    category = "AzureFirewallNetworkRule"
-    enabled  = true
-
-    retention_policy {
-      enabled = false
-      days    = 0
-    }
-  }
-  log {
-
-    category = "AzureFirewallDnsProxy"
-    enabled  = true
-
-    retention_policy {
-      enabled = false
-      days    = 0
-    }
-  }
-  log {
-
-    category = "AzureFirewallNetworkRule"
-    enabled  = true
-
-    retention_policy {
-      enabled = false
-      days    = 0
+      retention_policy {
+        enabled = contains(local.firewall_diagnostic_categories_enabled, log.value) ? true : false
+        days    = 365
+      }
     }
   }
 
@@ -83,8 +62,8 @@ resource "azurerm_monitor_diagnostic_setting" "firewall" {
     enabled  = true
 
     retention_policy {
-      enabled = false
-      days    = 0
+      enabled = true
+      days    = 365
     }
   }
 }
@@ -122,7 +101,33 @@ resource "azurerm_firewall_application_rule_collection" "shared_subnet" {
       "graph.microsoft.com",
       "login.microsoftonline.com",
       "aadcdn.msftauth.net",
-      "graph.windows.net"
+      "graph.windows.net",
+      "keyserver.ubuntu.com",
+      "packages.microsoft.com",
+      "download.docker.com"
+    ]
+
+    source_addresses = data.azurerm_subnet.shared.address_prefixes
+  }
+
+  rule {
+    name = "nexus-bootstrap"
+
+    protocol {
+      port = "443"
+      type = "Https"
+    }
+
+    protocol {
+      port = "80"
+      type = "Http"
+    }
+
+    target_fqdns = [
+      "keyserver.ubuntu.com",
+      "packages.microsoft.com",
+      "download.docker.com",
+      "azure.archive.ubuntu.com"
     ]
 
     source_addresses = data.azurerm_subnet.shared.address_prefixes
@@ -136,9 +141,8 @@ resource "azurerm_firewall_application_rule_collection" "resource_processor_subn
   priority            = 101
   action              = "Allow"
 
-
   rule {
-    name = "package-sources"
+    name = "os-package-sources"
     protocol {
       port = "443"
       type = "Https"
@@ -155,11 +159,45 @@ resource "azurerm_firewall_application_rule_collection" "resource_processor_subn
       "azure.archive.ubuntu.com",
       "security.ubuntu.com",
       "entropy.ubuntu.com",
+    ]
+    source_addresses = data.azurerm_subnet.resource_processor.address_prefixes
+  }
+
+  rule {
+    name = "docker-sources"
+    protocol {
+      port = "443"
+      type = "Https"
+    }
+    protocol {
+      port = "80"
+      type = "Http"
+    }
+
+    target_fqdns = [
       "download.docker.com",
       "registry-1.docker.io",
       "auth.docker.io",
+    ]
+    source_addresses = data.azurerm_subnet.resource_processor.address_prefixes
+  }
+
+  # TODO: remove this rule when all bundles have mirrored their plugins
+  # https://github.com/microsoft/AzureTRE/issues/2445
+  rule {
+    name = "terraform-sources"
+    protocol {
+      port = "443"
+      type = "Https"
+    }
+    protocol {
+      port = "80"
+      type = "Http"
+    }
+
+    target_fqdns = [
       "registry.terraform.io",
-      "releases.hashicorp.com"
+      "releases.hashicorp.com",
     ]
     source_addresses = data.azurerm_subnet.resource_processor.address_prefixes
   }
@@ -290,7 +328,7 @@ resource "azurerm_firewall_application_rule_collection" "web_app_subnet" {
 }
 
 # these rule collections are driven by the API, through resource properties
-resource "azurerm_firewall_application_rule_collection" "api_driven_rules" {
+resource "azurerm_firewall_application_rule_collection" "api_driven_application_rules" {
   for_each            = { for i, v in jsondecode(base64decode(var.api_driven_rule_collections_b64)) : i => v }
   name                = each.value.name
   azure_firewall_name = azurerm_firewall.fw.name
@@ -315,4 +353,41 @@ resource "azurerm_firewall_application_rule_collection" "api_driven_rules" {
       fqdn_tags        = try(rule.value.fqdn_tags, [])
     }
   }
+
+  depends_on = [
+    azurerm_firewall_application_rule_collection.web_app_subnet
+  ]
+}
+
+moved {
+  from = azurerm_firewall_application_rule_collection.api_driven_rules
+  to   = azurerm_firewall_application_rule_collection.api_driven_application_rules
+}
+
+resource "azurerm_firewall_network_rule_collection" "api_driven_network_rules" {
+  for_each            = { for i, v in jsondecode(base64decode(var.api_driven_network_rule_collections_b64)) : i => v }
+  name                = each.value.name
+  azure_firewall_name = azurerm_firewall.fw.name
+  resource_group_name = azurerm_firewall.fw.resource_group_name
+  priority            = try(each.value.priority, (200 + each.key))
+  action              = each.value.action
+
+  dynamic "rule" {
+    for_each = each.value.rules
+    content {
+      name                  = rule.value.name
+      description           = rule.value.description
+      source_addresses      = try(rule.value.source_addresses, [])
+      source_ip_groups      = try(rule.value.source_ip_groups, [])
+      destination_addresses = try(rule.value.destination_addresses, [])
+      destination_ip_groups = try(rule.value.destination_ip_groups, [])
+      destination_fqdns     = try(rule.value.destination_fqdns, [])
+      destination_ports     = try(rule.value.destination_ports, [])
+      protocols             = try(rule.value.protocols, [])
+    }
+  }
+
+  depends_on = [
+    azurerm_firewall_application_rule_collection.api_driven_application_rules
+  ]
 }

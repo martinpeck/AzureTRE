@@ -1,4 +1,4 @@
-FROM debian:buster
+FROM debian:buster-slim
 
 ARG BUNDLE_DIR
 
@@ -16,5 +16,4 @@ ARG BUNDLE_DIR
 # PORTER_MIXINS
 
 # Use the BUNDLE_DIR build argument to copy files into the bundle
-
 COPY . $BUNDLE_DIR
